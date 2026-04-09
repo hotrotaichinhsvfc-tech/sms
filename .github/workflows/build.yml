@@ -32,7 +32,6 @@ jobs:
       - name: 🔄 Setup Gradle Wrapper
         run: |
           mkdir -p gradle/wrapper
-          
           cat > gradle/wrapper/gradle-wrapper.properties << 'EOFWRAP'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
@@ -40,7 +39,6 @@ jobs:
           zipStoreBase=GRADLE_USER_HOME
           zipStorePath=wrapper/dists
           EOFWRAP
-          
           cat > gradlew << 'EOFGRADLEW'
           #!/bin/sh
           APP_NAME="Gradle"
@@ -49,7 +47,6 @@ jobs:
           exec java -cp "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
           EOFGRADLEW
           chmod +x gradlew
-          
           cat > gradlew.bat << 'EOFBAT'
           @echo off
           setlocal enabledelayedexpansion
@@ -57,7 +54,6 @@ jobs:
           set CLASSPATH=%APP_HOME%gradle\wrapper\gradle-wrapper.jar
           java -cp "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
           EOFBAT
-          
           echo "✅ Gradle wrapper setup complete"
 
       - name: ☕ Setup Java 17
@@ -81,13 +77,11 @@ jobs:
           set -e
           BASE="app/src/main/java/com/smsmarketing"
           RES="app/src/main/res"
-          
           mkdir -p $BASE/data/{model,db,repository}
           mkdir -p $BASE/utils $BASE/worker
           mkdir -p $BASE/ui/{main,import,contacts,message,settings,logs,campaign,templates,schedule}
           mkdir -p $RES/{values,values-vi,drawable,layout,menu,navigation}
           mkdir -p $RES/{mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
-          
           echo "✅ Directory structure created"
 
       - name: 🇻🇳 Create Vietnamese Strings
@@ -235,7 +229,6 @@ jobs:
               <color name="colorSelected">#E3F2FD</color>
           </resources>
           EOFCOLORS
-          
           cat > app/src/main/res/values/dimens.xml << 'EOFDIMENS'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -360,7 +353,6 @@ jobs:
           kotlin.code.style=official
           android.suppressUnsupportedCompileSdk=34
           EOFPROPS
-          
           cat > local.properties << 'EOFLOCAL'
           sdk.dir=$ANDROID_SDK_ROOT
           EOFLOCAL
@@ -395,6 +387,14 @@ jobs:
         with:
           name: SMSMarketing-Debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: 📤 Upload Build Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Build-Logs
+          path: build.log
           retention-days: 7
 
       - name: 📋 Build Summary
@@ -403,8 +403,5 @@ jobs:
           echo "=========================================="
           echo "✅ BUILD WORKFLOW COMPLETED"
           echo "=========================================="
-          echo "📁 Project Structure Created:"
-          find app/src/main -type d | head -20 || echo "Directories created"
-          echo ""
-          echo "📦 APK: app/build/outputs/apk/debug/app-debug.apk"
+          find app/src/main -type d 2>/dev/null | head -20 || echo "Directories created"
           echo "=========================================="
