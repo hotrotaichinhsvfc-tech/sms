@@ -10,25 +10,31 @@ on:
 env:
   GRADLE_VERSION: 8.4
   JAVA_VERSION: 17
-  ANDROID_SDK_VERSION: 34
-  MIN_SDK_VERSION: 26
+  ANDROID_COMPILE_SDK: 34
+  ANDROID_MIN_SDK: 26
 
 jobs:
   prepare_and_build:
     name: 📦 Prepare Project & Build APK
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: write
       checks: write
       pull-requests: write
 
     steps:
+      # ─────────────────────────────────────────
+      # 1. CHECKOUT
+      # ─────────────────────────────────────────
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ─────────────────────────────────────────
+      # 2. JAVA SETUP
+      # ─────────────────────────────────────────
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -36,31 +42,540 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: 🔧 Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: ${{ env.ANDROID_SDK_VERSION }}
-          ndk-version: r25c
+      # ─────────────────────────────────────────
+      # FIX #1: Tải Gradle thật và dùng nó tự sinh wrapper
+      #         (bao gồm gradle-wrapper.jar đúng chuẩn).
+      #         Bản cũ tạo gradlew/properties thủ công nhưng
+      #         THIẾU gradle-wrapper.jar → build crash ngay.
+      # ─────────────────────────────────────────
+      - name: 🔧 Install Gradle & Generate Wrapper
+        run: |
+          set -e
+          echo "⬇️  Downloading Gradle ${{ env.GRADLE_VERSION }}..."
+          wget -q "https://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip" \
+               -O /tmp/gradle-bin.zip
+          unzip -q /tmp/gradle-bin.zip -d /tmp/gradle-dist
+          export GRADLE_HOME="/tmp/gradle-dist/gradle-${{ env.GRADLE_VERSION }}"
 
-      - name: 📝 Grant Execute Permissions
-        run: chmod +x gradlew
+          mkdir -p gradle/wrapper
+          "$GRADLE_HOME/bin/gradle" wrapper \
+            --gradle-version="${{ env.GRADLE_VERSION }}" \
+            --distribution-type=bin
+          chmod +x gradlew
 
+          echo "✅ Gradle wrapper generated (including gradle-wrapper.jar):"
+          ls -lh gradle/wrapper/
+
+      # ─────────────────────────────────────────
+      # FIX #2: setup-android@v3 không nhận api-level/ndk-version
+      #         Thay bằng: dùng SDK có sẵn trên ubuntu-latest
+      #         rồi cài thêm platform + build-tools qua sdkmanager.
+      # ─────────────────────────────────────────
+      - name: 🤖 Setup Android SDK Components
+        run: |
+          set -e
+          echo "ANDROID_HOME = $ANDROID_HOME"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses \
+                > /dev/null 2>&1 || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            > /dev/null 2>&1
+          echo "✅ Android SDK components installed"
+
+      # ─────────────────────────────────────────
+      # 3. TẠO CẤU TRÚC THƯ MỤC
+      # ─────────────────────────────────────────
       - name: 📂 Create Directory Structure
         run: |
           set -e
           BASE="app/src/main/java/com/smsmarketing"
           RES="app/src/main/res"
-          mkdir -p $BASE/data/{model,db,repository}
-          mkdir -p $BASE/utils $BASE/worker
-          mkdir -p $BASE/ui/{main,import,contacts,message,settings,logs,campaign,templates,schedule}
-          mkdir -p $RES/{values,values-vi,drawable,layout,menu,navigation}
-          mkdir -p $RES/{mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
+
+          mkdir -p "${BASE}/data/"{model,db,repository}
+          mkdir -p "${BASE}/utils" "${BASE}/worker"
+          mkdir -p "${BASE}/ui/"{main,import,contacts,message,settings,logs,campaign,templates,schedule}
+          mkdir -p "${RES}/"{values,values-vi,drawable,layout,menu,navigation}
+          mkdir -p "${RES}/"{mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
+          mkdir -p app/src/test/java/com/smsmarketing
+          mkdir -p app/src/androidTest/java/com/smsmarketing
+
           echo "✅ Directory structure created"
 
+      # ─────────────────────────────────────────
+      # FIX #3: Tạo đủ file Gradle (settings + root + app).
+      #         Bản cũ hoàn toàn THIẾU 3 file này → Gradle
+      #         không biết project cần build gì.
+      # ─────────────────────────────────────────
+      - name: ⚙️ Create Gradle Build Files
+        run: |
+          # ── settings.gradle ──
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  google()
+                  mavenCentral()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "SMSMarketing"
+          include ':app'
+          EOF
+
+          # ── Root build.gradle ──
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.20' apply false
+          }
+          EOF
+
+          # ── app/build.gradle ──
+          cat > app/build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.smsmarketing'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.smsmarketing"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0.0"
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+              }
+
+              buildTypes {
+                  debug {
+                      debuggable true
+                      minifyEnabled false
+                  }
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                              'proguard-rules.pro'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+
+              buildFeatures {
+                  viewBinding true
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+              // Navigation
+              implementation 'androidx.navigation:navigation-fragment-ktx:2.7.6'
+              implementation 'androidx.navigation:navigation-ui-ktx:2.7.6'
+
+              // Lifecycle
+              implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0'
+              implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.7.0'
+
+              // Room Database
+              implementation 'androidx.room:room-runtime:2.6.1'
+              implementation 'androidx.room:room-ktx:2.6.1'
+              annotationProcessor 'androidx.room:room-compiler:2.6.1'
+
+              // WorkManager
+              implementation 'androidx.work:work-runtime-ktx:2.9.0'
+
+              // Testing
+              testImplementation 'junit:junit:4.13.2'
+              androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+              androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+          }
+          EOF
+
+          # ── proguard-rules.pro ──
+          cat > app/proguard-rules.pro << 'EOF'
+          # Add project specific ProGuard rules here.
+          -keep class com.smsmarketing.** { *; }
+          EOF
+
+          echo "✅ All Gradle build files created"
+
+      # ─────────────────────────────────────────
+      # FIX #4: gradle.properties
+      #   - Xóa -XX:MaxPermSize=512m (đã bị xóa từ Java 8,
+      #     dùng với Java 17 sẽ gây lỗi JVM argument không hợp lệ)
+      # ─────────────────────────────────────────
+      - name: 📋 Create gradle.properties
+        run: |
+          cat > gradle.properties << 'EOF'
+          # FIX: Bỏ -XX:MaxPermSize=512m (không còn hợp lệ từ Java 8+)
+          org.gradle.jvmargs=-Xmx4096m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          android.useAndroidX=true
+          android.enableJetifier=true
+          kotlin.code.style=official
+          android.suppressUnsupportedCompileSdk=34
+          EOF
+          echo "✅ gradle.properties created"
+
+      # ─────────────────────────────────────────
+      # FIX #5: local.properties
+      #   Bản cũ: sdk.dir=$ANDROID_SDK_ROOT trong single-quote
+      #   heredoc → biến KHÔNG được expand → Gradle không tìm
+      #   thấy SDK. Fix: dùng echo thay vì heredoc.
+      # ─────────────────────────────────────────
+      - name: 🗂️ Create local.properties
+        run: |
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          echo "✅ local.properties: $(cat local.properties)"
+
+      # ─────────────────────────────────────────
+      # FIX #6: AndroidManifest.xml
+      #   - Thêm FOREGROUND_SERVICE_REMOTE_MESSAGING (bắt buộc
+      #     với foregroundServiceType="remoteMessaging" trên API 34)
+      #   - Xóa android:debuggable="false" (Gradle tự quản lý,
+      #     để trong manifest dễ gây nhầm lẫn)
+      #   - Storage: thêm maxSdkVersion cho các permission cũ,
+      #     thêm READ_MEDIA_IMAGES cho API 33+
+      #   - Thêm BootReceiver đúng trong manifest
+      # ─────────────────────────────────────────
+      - name: 🔐 Create AndroidManifest.xml
+        run: |
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- ── SMS ── -->
+              <uses-permission android:name="android.permission.SEND_SMS" />
+              <uses-permission android:name="android.permission.READ_SMS" />
+              <uses-permission android:name="android.permission.RECEIVE_SMS" />
+
+              <!-- ── Contacts ── -->
+              <uses-permission android:name="android.permission.READ_CONTACTS" />
+              <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+
+              <!--
+                FIX: Storage permissions
+                - READ_EXTERNAL_STORAGE chỉ có hiệu lực đến API 32
+                - WRITE_EXTERNAL_STORAGE chỉ có hiệu lực đến API 29
+                - Từ API 33+ dùng READ_MEDIA_IMAGES / SAF thay thế
+              -->
+              <uses-permission
+                  android:name="android.permission.READ_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="32" />
+              <uses-permission
+                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="29" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+              <!-- ── Network & Background ── -->
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <!--
+                FIX: Bắt buộc phải khai báo khi dùng
+                foregroundServiceType="remoteMessaging" trên Android 14 (API 34)
+              -->
+              <uses-permission
+                  android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <!--
+                Lưu ý: SCHEDULE_EXACT_ALARM trên Android 12+ yêu cầu
+                người dùng cấp thủ công trong Settings → App → Alarms & Reminders.
+                Cần xử lý AlarmManager.canScheduleExactAlarms() trong code.
+              -->
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+              <uses-feature
+                  android:name="android.hardware.telephony"
+                  android:required="false" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.SMSMarketing">
+
+                  <!-- FIX: Bỏ android:debuggable="false" — Gradle tự set
+                       debuggable=true cho debug build và false cho release -->
+                  <activity
+                      android:name=".ui.main.MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".worker.SmsService"
+                      android:exported="false"
+                      android:foregroundServiceType="remoteMessaging" />
+
+                  <receiver
+                      android:name=".worker.SmsBroadcastReceiver"
+                      android:exported="true">
+                      <intent-filter android:priority="999">
+                          <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+                      </intent-filter>
+                  </receiver>
+
+                  <!-- FIX: Khai báo BootReceiver (dùng RECEIVE_BOOT_COMPLETED) -->
+                  <receiver
+                      android:name=".worker.BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+
+              </application>
+          </manifest>
+          EOF
+          echo "✅ AndroidManifest.xml created"
+
+      # ─────────────────────────────────────────
+      # 4. TẠO KOTLIN SOURCE FILES
+      #    FIX #7: Bản cũ KHÔNG có source code nào.
+      #    nav_graph + manifest đã tham chiếu class nhưng không
+      #    có class thật → build thất bại với ClassNotFound.
+      # ─────────────────────────────────────────
+      - name: 📝 Create Kotlin Source Files
+        run: |
+          BASE="app/src/main/java/com/smsmarketing"
+
+          # ── MainActivity ──
+          cat > "${BASE}/ui/main/MainActivity.kt" << 'EOF'
+          package com.smsmarketing.ui.main
+
+          import android.os.Bundle
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.navigation.fragment.NavHostFragment
+          import androidx.navigation.ui.setupWithNavController
+          import com.google.android.material.bottomnavigation.BottomNavigationView
+          import com.smsmarketing.R
+
+          class MainActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+                  val navHost = supportFragmentManager
+                      .findFragmentById(R.id.nav_host_fragment) as NavHostFragment
+                  val navController = navHost.navController
+                  findViewById<BottomNavigationView>(R.id.bottom_nav)
+                      .setupWithNavController(navController)
+              }
+          }
+          EOF
+
+          # ── ImportFragment ──
+          cat > "${BASE}/ui/import/ImportFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.import
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class ImportFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── ContactsFragment ──
+          cat > "${BASE}/ui/contacts/ContactsFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.contacts
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class ContactsFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── TemplateFragment ──
+          cat > "${BASE}/ui/templates/TemplateFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.templates
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class TemplateFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── CampaignFragment ──
+          cat > "${BASE}/ui/campaign/CampaignFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.campaign
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class CampaignFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── ScheduleFragment ──
+          cat > "${BASE}/ui/schedule/ScheduleFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.schedule
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class ScheduleFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── LogsFragment ──
+          cat > "${BASE}/ui/logs/LogsFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.logs
+
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import androidx.fragment.app.Fragment
+
+          class LogsFragment : Fragment() {
+              override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View? =
+                  i.inflate(android.R.layout.activity_list_item, c, false)
+          }
+          EOF
+
+          # ── SmsService ──
+          cat > "${BASE}/worker/SmsService.kt" << 'EOF'
+          package com.smsmarketing.worker
+
+          import android.app.Service
+          import android.content.Intent
+          import android.os.IBinder
+
+          class SmsService : Service() {
+              override fun onBind(intent: Intent?): IBinder? = null
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
+                  START_NOT_STICKY
+          }
+          EOF
+
+          # ── SmsBroadcastReceiver ──
+          cat > "${BASE}/worker/SmsBroadcastReceiver.kt" << 'EOF'
+          package com.smsmarketing.worker
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+
+          class SmsBroadcastReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) { /* TODO */ }
+          }
+          EOF
+
+          # ── BootReceiver ──
+          cat > "${BASE}/worker/BootReceiver.kt" << 'EOF'
+          package com.smsmarketing.worker
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) { /* TODO */ }
+          }
+          EOF
+
+          echo "✅ All Kotlin source files created"
+
+      # ─────────────────────────────────────────
+      # 5. LAYOUT XML
+      # ─────────────────────────────────────────
+      - name: 🖥️ Create Layout Files
+        run: |
+          # activity_main.xml
+          cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <androidx.constraintlayout.widget.ConstraintLayout
+              xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+              <androidx.fragment.app.FragmentContainerView
+                  android:id="@+id/nav_host_fragment"
+                  android:name="androidx.navigation.fragment.NavHostFragment"
+                  android:layout_width="0dp"
+                  android:layout_height="0dp"
+                  app:defaultNavHost="true"
+                  app:layout_constraintBottom_toTopOf="@id/bottom_nav"
+                  app:layout_constraintEnd_toEndOf="parent"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintTop_toTopOf="parent"
+                  app:navGraph="@navigation/nav_graph" />
+
+              <com.google.android.material.bottomnavigation.BottomNavigationView
+                  android:id="@+id/bottom_nav"
+                  android:layout_width="0dp"
+                  android:layout_height="wrap_content"
+                  app:layout_constraintBottom_toBottomOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:menu="@menu/bottom_nav_menu" />
+
+          </androidx.constraintlayout.widget.ConstraintLayout>
+          EOF
+          echo "✅ Layout files created"
+
+      # ─────────────────────────────────────────
+      # 6. RESOURCE FILES (strings, colors, dimens, themes, menu, nav)
+      # ─────────────────────────────────────────
       - name: 🇻🇳 Create Vietnamese Strings
         run: |
-          mkdir -p app/src/main/res/values-vi
-          cat > app/src/main/res/values-vi/strings.xml << 'EOFVI'
+          cat > app/src/main/res/values-vi/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">Gửi SMS Marketing</string>
@@ -95,7 +610,7 @@ jobs:
               <string name="btn_deselect_all">Bỏ chọn</string>
               <string name="btn_send_selected">Gửi đã chọn</string>
               <string name="msg_campaign_created">Tạo chiến dịch thành công</string>
-              <string name="msg_sending">Đang gửi...</string>
+              <string name="msg_sending">Đang gửi…</string>
               <string name="msg_paused">Tạm dừng</string>
               <string name="msg_completed">Hoàn tất</string>
               <string name="msg_failed">Thất bại</string>
@@ -117,12 +632,11 @@ jobs:
               <string name="perm_contacts">Quyền truy cập danh bạ</string>
               <string name="perm_storage">Quyền truy cập tệp</string>
           </resources>
-          EOFVI
+          EOF
 
       - name: 🌐 Create English Strings
         run: |
-          mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/strings.xml << 'EOFENG'
+          cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">SMS Marketing</string>
@@ -157,7 +671,7 @@ jobs:
               <string name="btn_deselect_all">Deselect All</string>
               <string name="btn_send_selected">Send Selected</string>
               <string name="msg_campaign_created">Campaign created successfully</string>
-              <string name="msg_sending">Sending...</string>
+              <string name="msg_sending">Sending…</string>
               <string name="msg_paused">Paused</string>
               <string name="msg_completed">Completed</string>
               <string name="msg_failed">Failed</string>
@@ -179,11 +693,11 @@ jobs:
               <string name="perm_contacts">Contacts Permission</string>
               <string name="perm_storage">Storage Permission</string>
           </resources>
-          EOFENG
+          EOF
 
       - name: 🎨 Create Colors & Dimensions
         run: |
-          cat > app/src/main/res/values/colors.xml << 'EOFCOLORS'
+          cat > app/src/main/res/values/colors.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <color name="white">#FFFFFFFF</color>
@@ -201,8 +715,9 @@ jobs:
               <color name="colorDivider">#E0E0E0</color>
               <color name="colorSelected">#E3F2FD</color>
           </resources>
-          EOFCOLORS
-          cat > app/src/main/res/values/dimens.xml << 'EOFDIMENS'
+          EOF
+
+          cat > app/src/main/res/values/dimens.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <dimen name="margin_small">8dp</dimen>
@@ -213,14 +728,15 @@ jobs:
               <dimen name="text_size_large">16sp</dimen>
               <dimen name="text_size_title">18sp</dimen>
           </resources>
-          EOFDIMENS
+          EOF
 
       - name: 🎭 Create Themes
         run: |
-          cat > app/src/main/res/values/themes.xml << 'EOFTHEME'
+          cat > app/src/main/res/values/themes.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources xmlns:tools="http://schemas.android.com/tools">
-              <style name="Theme.SMSMarketing" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+              <style name="Theme.SMSMarketing"
+                     parent="Theme.MaterialComponents.DayNight.DarkActionBar">
                   <item name="colorPrimary">@color/colorPrimary</item>
                   <item name="colorPrimaryVariant">@color/colorPrimaryDark</item>
                   <item name="colorOnPrimary">@color/colorOnPrimary</item>
@@ -232,112 +748,126 @@ jobs:
                   <item name="windowNoTitle">true</item>
               </style>
           </resources>
-          EOFTHEME
+          EOF
 
       - name: 📋 Create Menu Files
         run: |
-          cat > app/src/main/res/menu/bottom_nav_menu.xml << 'EOFMENU'
+          cat > app/src/main/res/menu/bottom_nav_menu.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <menu xmlns:android="http://schemas.android.com/apk/res/android">
-              <item android:id="@+id/nav_import" android:icon="@android:drawable/ic_menu_upload" android:title="@string/nav_import" />
-              <item android:id="@+id/nav_contacts" android:icon="@android:drawable/ic_menu_myplaces" android:title="@string/nav_contacts" />
-              <item android:id="@+id/nav_templates" android:icon="@android:drawable/ic_dialog_email" android:title="@string/nav_templates" />
-              <item android:id="@+id/nav_campaigns" android:icon="@android:drawable/ic_menu_recent_history" android:title="@string/nav_campaigns" />
-              <item android:id="@+id/nav_schedule" android:icon="@android:drawable/ic_dialog_info" android:title="@string/nav_schedule" />
-              <item android:id="@+id/nav_logs" android:icon="@android:drawable/ic_menu_recent_history" android:title="@string/nav_logs" />
+              <item android:id="@+id/nav_import"
+                  android:icon="@android:drawable/ic_menu_upload"
+                  android:title="@string/nav_import" />
+              <item android:id="@+id/nav_contacts"
+                  android:icon="@android:drawable/ic_menu_myplaces"
+                  android:title="@string/nav_contacts" />
+              <item android:id="@+id/nav_templates"
+                  android:icon="@android:drawable/ic_dialog_email"
+                  android:title="@string/nav_templates" />
+              <item android:id="@+id/nav_campaigns"
+                  android:icon="@android:drawable/ic_menu_recent_history"
+                  android:title="@string/nav_campaigns" />
+              <item android:id="@+id/nav_schedule"
+                  android:icon="@android:drawable/ic_dialog_info"
+                  android:title="@string/nav_schedule" />
+              <item android:id="@+id/nav_logs"
+                  android:icon="@android:drawable/ic_menu_agenda"
+                  android:title="@string/nav_logs" />
           </menu>
-          EOFMENU
+          EOF
 
       - name: 🗺️ Create Navigation Graph
         run: |
-          cat > app/src/main/res/navigation/nav_graph.xml << 'EOFNAV'
+          cat > app/src/main/res/navigation/nav_graph.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <navigation xmlns:android="http://schemas.android.com/apk/res/android"
+          <navigation
+              xmlns:android="http://schemas.android.com/apk/res/android"
               xmlns:app="http://schemas.android.com/apk/res-auto"
               android:id="@+id/nav_graph"
               app:startDestination="@id/nav_import">
-              <fragment android:id="@+id/nav_import" android:name="com.smsmarketing.ui.import.ImportFragment" android:label="@string/nav_import" />
-              <fragment android:id="@+id/nav_contacts" android:name="com.smsmarketing.ui.contacts.ContactsFragment" android:label="@string/nav_contacts" />
-              <fragment android:id="@+id/nav_templates" android:name="com.smsmarketing.ui.templates.TemplateFragment" android:label="@string/nav_templates" />
-              <fragment android:id="@+id/nav_campaigns" android:name="com.smsmarketing.ui.campaign.CampaignFragment" android:label="@string/nav_campaigns" />
-              <fragment android:id="@+id/nav_schedule" android:name="com.smsmarketing.ui.schedule.ScheduleFragment" android:label="@string/nav_schedule" />
-              <fragment android:id="@+id/nav_logs" android:name="com.smsmarketing.ui.logs.LogsFragment" android:label="@string/nav_logs" />
+
+              <fragment android:id="@+id/nav_import"
+                  android:name="com.smsmarketing.ui.import.ImportFragment"
+                  android:label="@string/nav_import" />
+              <fragment android:id="@+id/nav_contacts"
+                  android:name="com.smsmarketing.ui.contacts.ContactsFragment"
+                  android:label="@string/nav_contacts" />
+              <fragment android:id="@+id/nav_templates"
+                  android:name="com.smsmarketing.ui.templates.TemplateFragment"
+                  android:label="@string/nav_templates" />
+              <fragment android:id="@+id/nav_campaigns"
+                  android:name="com.smsmarketing.ui.campaign.CampaignFragment"
+                  android:label="@string/nav_campaigns" />
+              <fragment android:id="@+id/nav_schedule"
+                  android:name="com.smsmarketing.ui.schedule.ScheduleFragment"
+                  android:label="@string/nav_schedule" />
+              <fragment android:id="@+id/nav_logs"
+                  android:name="com.smsmarketing.ui.logs.LogsFragment"
+                  android:label="@string/nav_logs" />
           </navigation>
-          EOFNAV
+          EOF
 
-      - name: 🔐 Update AndroidManifest.xml
+      # ─────────────────────────────────────────
+      # 7. APP ICON PLACEHOLDER (PNG tối giản để build không fail)
+      # ─────────────────────────────────────────
+      - name: 🖼️ Create App Icon Placeholders
         run: |
-          cat > app/src/main/AndroidManifest.xml << 'EOFMANIFEST'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.smsmarketing">
-              <uses-permission android:name="android.permission.SEND_SMS" />
-              <uses-permission android:name="android.permission.READ_SMS" />
-              <uses-permission android:name="android.permission.RECEIVE_SMS" />
-              <uses-permission android:name="android.permission.READ_CONTACTS" />
-              <uses-permission android:name="android.permission.WRITE_CONTACTS" />
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-              <uses-feature android:name="android.hardware.telephony" android:required="false" />
-              <application
-                  android:allowBackup="true"
-                  android:debuggable="false"
-                  android:icon="@mipmap/ic_launcher"
-                  android:label="@string/app_name"
-                  android:roundIcon="@mipmap/ic_launcher_round"
-                  android:supportsRtl="true"
-                  android:theme="@style/Theme.SMSMarketing">
-                  <activity
-                      android:name=".ui.main.MainActivity"
-                      android:exported="true"
-                      android:windowSoftInputMode="adjustResize">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-                  <service
-                      android:name=".worker.SmsService"
-                      android:exported="false"
-                      android:foregroundServiceType="remoteMessaging" />
-                  <receiver
-                      android:name=".worker.SmsBroadcastReceiver"
-                      android:exported="true">
-                      <intent-filter android:priority="999">
-                          <action android:name="android.provider.Telephony.SMS_RECEIVED" />
-                      </intent-filter>
-                  </receiver>
-              </application>
-          </manifest>
-          EOFMANIFEST
+          python3 << 'EOFPY'
+          import struct, zlib, os
 
-      - name: ⚙️ Create Gradle Config Files
-        run: |
-          cat > gradle.properties << 'EOFPROPS'
-          org.gradle.jvmargs=-Xmx4096m -XX:MaxPermSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
-          org.gradle.parallel=true
-          org.gradle.caching=true
-          android.useAndroidX=true
-          android.enableJetifier=true
-          kotlin.code.style=official
-          android.suppressUnsupportedCompileSdk=34
-          EOFPROPS
-          cat > local.properties << 'EOFLOCAL'
-          sdk.dir=$ANDROID_SDK_ROOT
-          EOFLOCAL
+          def make_png(w, h, rgb=(21, 101, 192)):
+              def u32(n): return struct.pack('>I', n)
+              def chunk(tag, data):
+                  crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+                  return u32(len(data)) + tag + data + u32(crc)
+              raw = b''.join(b'\x00' + bytes(rgb) * w for _ in range(h))
+              return (b'\x89PNG\r\n\x1a\n'
+                      + chunk(b'IHDR', u32(w)+u32(h)+b'\x08\x02\x00\x00\x00')
+                      + chunk(b'IDAT', zlib.compress(raw))
+                      + chunk(b'IEND', b''))
 
-      - name: ✅ Validate Gradle Wrapper
-        uses: gradle/wrapper-validation-action@v2
+          densities = ['mipmap-mdpi','mipmap-hdpi','mipmap-xhdpi',
+                       'mipmap-xxhdpi','mipmap-xxxhdpi']
+          sizes     = [48, 72, 96, 144, 192]
 
+          for density, size in zip(densities, sizes):
+              base = f'app/src/main/res/{density}'
+              os.makedirs(base, exist_ok=True)
+              png = make_png(size, size)
+              open(f'{base}/ic_launcher.png',       'wb').write(png)
+              open(f'{base}/ic_launcher_round.png', 'wb').write(png)
+
+          print("✅ App icons created")
+          EOFPY
+
+      # ─────────────────────────────────────────
+      # 8. GRANT EXECUTE PERMISSION (an toàn — chạy lại sau khi
+      #    wrapper đã được tạo ở bước Install Gradle)
+      # ─────────────────────────────────────────
+      - name: 📝 Grant Execute Permissions
+        run: chmod +x gradlew
+
+      # ─────────────────────────────────────────
+      # FIX #8: Bỏ gradle/wrapper-validation-action
+      #   (action đó validate JAR đã có sẵn trong repo,
+      #    nhưng ở đây chúng ta SINH ra wrapper trong CI
+      #    nên không cần validate nó với checksum bên ngoài)
+      # ─────────────────────────────────────────
+
+      # ─────────────────────────────────────────
+      # 9. BUILD
+      #    FIX: Bỏ -PdisablePreDex (deprecated Gradle flag)
+      # ─────────────────────────────────────────
       - name: 🏗️ Build Debug APK
         run: |
           echo "🔨 Building APK..."
-          ./gradlew clean assembleDebug -PdisablePreDex --no-daemon --stacktrace 2>&1 | tee build.log
-          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+          ./gradlew clean assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            2>&1 | tee build.log
+
+          BUILD_EXIT=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT -eq 0 ]; then
             echo "✅ Build successful!"
             ls -lh app/build/outputs/apk/debug/
           else
@@ -354,65 +884,32 @@ jobs:
         run: ./gradlew lint --no-daemon
         continue-on-error: true
 
+      # ─────────────────────────────────────────
+      # 10. UPLOAD ARTIFACT
+      # ─────────────────────────────────────────
       - name: 📤 Upload Debug APK
         uses: actions/upload-artifact@v4
         if: success()
         with:
           name: SMSMarketing-Debug
           path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
-
-      - name: 📤 Upload Build Logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Build-Logs
-          path: build.log
           retention-days: 7
 
-      - name: 📤 Upload Lint Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Lint-Report
-          path: app/build/reports/lint-results*.html
-          retention-days: 7
-
-      - name: 📊 Create Build Report
-        if: always()
-        run: |
-          cat > build_report.md << 'EOFREPORT'
-          # 📱 SMS Marketing Build Report
-          - **Build Date**: $(date)
-          - **Build Status**: ${{ job.status }}
-          - **Java Version**: Java ${{ env.JAVA_VERSION }}
-          - **Gradle Version**: ${{ env.GRADLE_VERSION }}
-          - **APK**: app/build/outputs/apk/debug/app-debug.apk
-          EOFREPORT
-          cat build_report.md >> $GITHUB_STEP_SUMMARY
-
-      - name: 💬 Comment on PR
-        if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const report = fs.readFileSync('build_report.md', 'utf8');
-            const status = '${{ job.status }}' === 'success' ? '✅' : '❌';
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `${status} **Build Status**: ${{ job.status }}\n\n${report}`
-            });
-
+      # ─────────────────────────────────────────
+      # 11. SUMMARY
+      # ─────────────────────────────────────────
       - name: 📋 Build Summary
         if: always()
         run: |
           echo "=========================================="
           echo "✅ BUILD WORKFLOW COMPLETED"
           echo "=========================================="
-          find app/src/main -type d 2>/dev/null | head -20 || echo "Directories created"
-          ls -lh app/build/outputs/apk/debug/app-debug.apk 2>/dev/null || echo "Build in progress"
+          echo "🔧 Java:    ${{ env.JAVA_VERSION }}"
+          echo "🤖 SDK:     ${{ env.ANDROID_COMPILE_SDK }}"
+          echo "📦 Gradle:  ${{ env.GRADLE_VERSION }}"
+          echo ""
+          echo "📁 Project structure:"
+          find app/src/main -type d | head -25 || true
+          echo ""
+          echo "📦 APK output: app/build/outputs/apk/debug/app-debug.apk"
           echo "=========================================="
