@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
 
 env:
-  GRADLE_VERSION: 8.4
-  JAVA_VERSION: 17
-  ANDROID_COMPILE_SDK: 34
-  ANDROID_MIN_SDK: 26
+  GRADLE_VERSION: "8.4"
+  JAVA_VERSION: "17"
+  ANDROID_COMPILE_SDK: "34"
+  ANDROID_MIN_SDK: "26"
 
 jobs:
   prepare_and_build:
@@ -24,95 +24,38 @@ jobs:
       pull-requests: write
 
     steps:
-      # ─────────────────────────────────────────
-      # 1. CHECKOUT
-      # ─────────────────────────────────────────
+
+      # ══════════════════════════════════════════════════
+      # STEP 1 — CHECKOUT
+      # ══════════════════════════════════════════════════
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ─────────────────────────────────────────
-      # 2. JAVA SETUP
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 2 — JAVA
+      # FIX: Bỏ "cache: gradle" vì lúc này chưa có file
+      # *.gradle nào trong repo → action báo "No file matched"
+      # và crash ngay lập tức.
+      # ══════════════════════════════════════════════════
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-          # FIX: Bỏ cache: gradle — lúc setup-java chạy, project chưa có
-          # file *.gradle nào (vì các bước tạo file chạy sau), nên action
-          # sẽ báo lỗi "No file matched" và fail ngay lập tức.
 
-      # ─────────────────────────────────────────
-      # FIX #1: Tải Gradle thật và dùng nó tự sinh wrapper
-      #         (bao gồm gradle-wrapper.jar đúng chuẩn).
-      #         Bản cũ tạo gradlew/properties thủ công nhưng
-      #         THIẾU gradle-wrapper.jar → build crash ngay.
-      # ─────────────────────────────────────────
-      - name: 🔧 Install Gradle & Generate Wrapper
+      # ══════════════════════════════════════════════════
+      # STEP 3 — TẠO settings.gradle & build.gradle GỐC
+      # FIX: Đây là bước PHẢI làm TRƯỚC "gradle wrapper".
+      # Gradle yêu cầu settings.gradle tồn tại trước khi
+      # có thể thực thi bất kỳ task nào kể cả "wrapper".
+      # Bản cũ tạo file này SAU → "Directory does not
+      # contain a Gradle build" → crash.
+      # ══════════════════════════════════════════════════
+      - name: ⚙️ Create Root Gradle Files
         run: |
-          set -e
-          echo "⬇️  Downloading Gradle ${{ env.GRADLE_VERSION }}..."
-          wget -q "https://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip" \
-               -O /tmp/gradle-bin.zip
-          unzip -q /tmp/gradle-bin.zip -d /tmp/gradle-dist
-          export GRADLE_HOME="/tmp/gradle-dist/gradle-${{ env.GRADLE_VERSION }}"
-
-          mkdir -p gradle/wrapper
-          "$GRADLE_HOME/bin/gradle" wrapper \
-            --gradle-version="${{ env.GRADLE_VERSION }}" \
-            --distribution-type=bin
-          chmod +x gradlew
-
-          echo "✅ Gradle wrapper generated (including gradle-wrapper.jar):"
-          ls -lh gradle/wrapper/
-
-      # ─────────────────────────────────────────
-      # FIX #2: setup-android@v3 không nhận api-level/ndk-version
-      #         Thay bằng: dùng SDK có sẵn trên ubuntu-latest
-      #         rồi cài thêm platform + build-tools qua sdkmanager.
-      # ─────────────────────────────────────────
-      - name: 🤖 Setup Android SDK Components
-        run: |
-          set -e
-          echo "ANDROID_HOME = $ANDROID_HOME"
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses \
-                > /dev/null 2>&1 || true
-          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
-            "build-tools;34.0.0" \
-            "platform-tools" \
-            > /dev/null 2>&1
-          echo "✅ Android SDK components installed"
-
-      # ─────────────────────────────────────────
-      # 3. TẠO CẤU TRÚC THƯ MỤC
-      # ─────────────────────────────────────────
-      - name: 📂 Create Directory Structure
-        run: |
-          set -e
-          BASE="app/src/main/java/com/smsmarketing"
-          RES="app/src/main/res"
-
-          mkdir -p "${BASE}/data/"{model,db,repository}
-          mkdir -p "${BASE}/utils" "${BASE}/worker"
-          mkdir -p "${BASE}/ui/"{main,import,contacts,message,settings,logs,campaign,templates,schedule}
-          mkdir -p "${RES}/"{values,values-vi,drawable,layout,menu,navigation}
-          mkdir -p "${RES}/"{mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
-          mkdir -p app/src/test/java/com/smsmarketing
-          mkdir -p app/src/androidTest/java/com/smsmarketing
-
-          echo "✅ Directory structure created"
-
-      # ─────────────────────────────────────────
-      # FIX #3: Tạo đủ file Gradle (settings + root + app).
-      #         Bản cũ hoàn toàn THIẾU 3 file này → Gradle
-      #         không biết project cần build gì.
-      # ─────────────────────────────────────────
-      - name: ⚙️ Create Gradle Build Files
-        run: |
-          # ── settings.gradle ──
+          # ── settings.gradle ──────────────────────────
           cat > settings.gradle << 'EOF'
           pluginManagement {
               repositories {
@@ -132,7 +75,7 @@ jobs:
           include ':app'
           EOF
 
-          # ── Root build.gradle ──
+          # ── build.gradle (root) ───────────────────────
           cat > build.gradle << 'EOF'
           plugins {
               id 'com.android.application' version '8.2.0' apply false
@@ -140,7 +83,77 @@ jobs:
           }
           EOF
 
-          # ── app/build.gradle ──
+          echo "✅ Root Gradle files created:"
+          ls -la *.gradle
+
+      # ══════════════════════════════════════════════════
+      # STEP 4 — TẢI GRADLE & SINH WRAPPER
+      # FIX: Tải Gradle thật rồi dùng nó sinh wrapper.
+      # Wrapper tự tạo đủ: gradlew + gradlew.bat +
+      # gradle/wrapper/gradle-wrapper.jar (file quan trọng
+      # mà bản đầu tiên bị thiếu hoàn toàn).
+      # Bước này chạy SAU khi settings.gradle đã tồn tại.
+      # ══════════════════════════════════════════════════
+      - name: 🔧 Install Gradle & Generate Wrapper
+        run: |
+          set -e
+          echo "⬇️  Downloading Gradle ${{ env.GRADLE_VERSION }}..."
+          wget -q \
+            "https://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip" \
+            -O /tmp/gradle-bin.zip
+          unzip -q /tmp/gradle-bin.zip -d /tmp/gradle-dist
+          GRADLE_HOME="/tmp/gradle-dist/gradle-${{ env.GRADLE_VERSION }}"
+
+          echo "🔨 Generating Gradle wrapper..."
+          "$GRADLE_HOME/bin/gradle" wrapper \
+            --gradle-version="${{ env.GRADLE_VERSION }}" \
+            --distribution-type=bin
+
+          chmod +x gradlew
+          echo "✅ Wrapper ready:"
+          ls -lh gradle/wrapper/
+
+      # ══════════════════════════════════════════════════
+      # STEP 5 — ANDROID SDK
+      # FIX: Bỏ android-actions/setup-android@v3 với tham
+      # số sai. ubuntu-latest đã có Android SDK sẵn.
+      # Chỉ cần sdkmanager cài thêm platform + build-tools.
+      # ══════════════════════════════════════════════════
+      - name: 🤖 Setup Android SDK
+        run: |
+          set -e
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+                --licenses > /dev/null 2>&1 || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
+            "build-tools;34.0.0" \
+            "platform-tools" > /dev/null 2>&1
+          echo "✅ Android SDK ready (ANDROID_HOME=${ANDROID_HOME})"
+
+      # ══════════════════════════════════════════════════
+      # STEP 6 — TẠO CẤU TRÚC THƯ MỤC
+      # ══════════════════════════════════════════════════
+      - name: 📂 Create Directory Structure
+        run: |
+          set -e
+          B="app/src/main/java/com/smsmarketing"
+          R="app/src/main/res"
+
+          mkdir -p "${B}/data/"{model,db,repository}
+          mkdir -p "${B}/utils" "${B}/worker"
+          mkdir -p "${B}/ui/"{main,import,contacts,message,settings,logs,campaign,templates,schedule}
+          mkdir -p "${R}/"{values,values-vi,drawable,layout,menu,navigation}
+          mkdir -p "${R}/"{mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
+          mkdir -p app/src/test/java/com/smsmarketing
+          mkdir -p app/src/androidTest/java/com/smsmarketing
+          echo "✅ Directories created"
+
+      # ══════════════════════════════════════════════════
+      # STEP 7 — app/build.gradle + proguard-rules.pro
+      # ══════════════════════════════════════════════════
+      - name: 📱 Create app/build.gradle
+        run: |
+          mkdir -p app
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -177,13 +190,9 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
 
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
+              kotlinOptions { jvmTarget = '17' }
 
-              buildFeatures {
-                  viewBinding true
-              }
+              buildFeatures { viewBinding true }
           }
 
           dependencies {
@@ -191,47 +200,33 @@ jobs:
               implementation 'androidx.appcompat:appcompat:1.6.1'
               implementation 'com.google.android.material:material:1.11.0'
               implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-
-              // Navigation
               implementation 'androidx.navigation:navigation-fragment-ktx:2.7.6'
               implementation 'androidx.navigation:navigation-ui-ktx:2.7.6'
-
-              // Lifecycle
               implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0'
               implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.7.0'
-
-              // Room Database
               implementation 'androidx.room:room-runtime:2.6.1'
               implementation 'androidx.room:room-ktx:2.6.1'
               annotationProcessor 'androidx.room:room-compiler:2.6.1'
-
-              // WorkManager
               implementation 'androidx.work:work-runtime-ktx:2.9.0'
-
-              // Testing
               testImplementation 'junit:junit:4.13.2'
               androidTestImplementation 'androidx.test.ext:junit:1.1.5'
               androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
           }
           EOF
 
-          # ── proguard-rules.pro ──
           cat > app/proguard-rules.pro << 'EOF'
-          # Add project specific ProGuard rules here.
           -keep class com.smsmarketing.** { *; }
           EOF
+          echo "✅ app/build.gradle created"
 
-          echo "✅ All Gradle build files created"
-
-      # ─────────────────────────────────────────
-      # FIX #4: gradle.properties
-      #   - Xóa -XX:MaxPermSize=512m (đã bị xóa từ Java 8,
-      #     dùng với Java 17 sẽ gây lỗi JVM argument không hợp lệ)
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 8 — gradle.properties
+      # FIX: Bỏ -XX:MaxPermSize=512m (không hợp lệ Java 8+,
+      # dùng Java 17 sẽ gây JVM error)
+      # ══════════════════════════════════════════════════
       - name: 📋 Create gradle.properties
         run: |
           cat > gradle.properties << 'EOF'
-          # FIX: Bỏ -XX:MaxPermSize=512m (không còn hợp lệ từ Java 8+)
           org.gradle.jvmargs=-Xmx4096m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
           org.gradle.parallel=true
           org.gradle.caching=true
@@ -242,76 +237,49 @@ jobs:
           EOF
           echo "✅ gradle.properties created"
 
-      # ─────────────────────────────────────────
-      # FIX #5: local.properties
-      #   Bản cũ: sdk.dir=$ANDROID_SDK_ROOT trong single-quote
-      #   heredoc → biến KHÔNG được expand → Gradle không tìm
-      #   thấy SDK. Fix: dùng echo thay vì heredoc.
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 9 — local.properties
+      # FIX: Dùng echo thay heredoc để $ANDROID_HOME được
+      # expand đúng (single-quote heredoc không expand biến)
+      # ══════════════════════════════════════════════════
       - name: 🗂️ Create local.properties
         run: |
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          echo "✅ local.properties: $(cat local.properties)"
+          echo "✅ $(cat local.properties)"
 
-      # ─────────────────────────────────────────
-      # FIX #6: AndroidManifest.xml
-      #   - Thêm FOREGROUND_SERVICE_REMOTE_MESSAGING (bắt buộc
-      #     với foregroundServiceType="remoteMessaging" trên API 34)
-      #   - Xóa android:debuggable="false" (Gradle tự quản lý,
-      #     để trong manifest dễ gây nhầm lẫn)
-      #   - Storage: thêm maxSdkVersion cho các permission cũ,
-      #     thêm READ_MEDIA_IMAGES cho API 33+
-      #   - Thêm BootReceiver đúng trong manifest
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 10 — AndroidManifest.xml
+      # FIX: + FOREGROUND_SERVICE_REMOTE_MESSAGING (API 34)
+      #      + Storage permissions với maxSdkVersion đúng
+      #      + READ_MEDIA_IMAGES cho API 33+
+      #      + Bỏ android:debuggable (Gradle tự quản lý)
+      #      + Thêm BootReceiver khai báo đầy đủ
+      # ══════════════════════════════════════════════════
       - name: 🔐 Create AndroidManifest.xml
         run: |
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-              <!-- ── SMS ── -->
               <uses-permission android:name="android.permission.SEND_SMS" />
               <uses-permission android:name="android.permission.READ_SMS" />
               <uses-permission android:name="android.permission.RECEIVE_SMS" />
-
-              <!-- ── Contacts ── -->
               <uses-permission android:name="android.permission.READ_CONTACTS" />
               <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
-              <!--
-                FIX: Storage permissions
-                - READ_EXTERNAL_STORAGE chỉ có hiệu lực đến API 32
-                - WRITE_EXTERNAL_STORAGE chỉ có hiệu lực đến API 29
-                - Từ API 33+ dùng READ_MEDIA_IMAGES / SAF thay thế
-              -->
-              <uses-permission
-                  android:name="android.permission.READ_EXTERNAL_STORAGE"
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
                   android:maxSdkVersion="32" />
-              <uses-permission
-                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
                   android:maxSdkVersion="29" />
               <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
-              <!-- ── Network & Background ── -->
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-              <!--
-                FIX: Bắt buộc phải khai báo khi dùng
-                foregroundServiceType="remoteMessaging" trên Android 14 (API 34)
-              -->
-              <uses-permission
-                  android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
               <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-              <!--
-                Lưu ý: SCHEDULE_EXACT_ALARM trên Android 12+ yêu cầu
-                người dùng cấp thủ công trong Settings → App → Alarms & Reminders.
-                Cần xử lý AlarmManager.canScheduleExactAlarms() trong code.
-              -->
               <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
-              <uses-feature
-                  android:name="android.hardware.telephony"
-                  android:required="false" />
+              <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
               <application
                   android:allowBackup="true"
@@ -321,8 +289,6 @@ jobs:
                   android:supportsRtl="true"
                   android:theme="@style/Theme.SMSMarketing">
 
-                  <!-- FIX: Bỏ android:debuggable="false" — Gradle tự set
-                       debuggable=true cho debug build và false cho release -->
                   <activity
                       android:name=".ui.main.MainActivity"
                       android:exported="true"
@@ -338,18 +304,13 @@ jobs:
                       android:exported="false"
                       android:foregroundServiceType="remoteMessaging" />
 
-                  <receiver
-                      android:name=".worker.SmsBroadcastReceiver"
-                      android:exported="true">
+                  <receiver android:name=".worker.SmsBroadcastReceiver" android:exported="true">
                       <intent-filter android:priority="999">
                           <action android:name="android.provider.Telephony.SMS_RECEIVED" />
                       </intent-filter>
                   </receiver>
 
-                  <!-- FIX: Khai báo BootReceiver (dùng RECEIVE_BOOT_COMPLETED) -->
-                  <receiver
-                      android:name=".worker.BootReceiver"
-                      android:exported="true">
+                  <receiver android:name=".worker.BootReceiver" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.BOOT_COMPLETED" />
                       </intent-filter>
@@ -360,18 +321,16 @@ jobs:
           EOF
           echo "✅ AndroidManifest.xml created"
 
-      # ─────────────────────────────────────────
-      # 4. TẠO KOTLIN SOURCE FILES
-      #    FIX #7: Bản cũ KHÔNG có source code nào.
-      #    nav_graph + manifest đã tham chiếu class nhưng không
-      #    có class thật → build thất bại với ClassNotFound.
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 11 — KOTLIN SOURCE FILES
+      # FIX: Bản cũ không có source code → manifest và
+      # nav_graph tham chiếu class không tồn tại → build fail
+      # ══════════════════════════════════════════════════
       - name: 📝 Create Kotlin Source Files
         run: |
-          BASE="app/src/main/java/com/smsmarketing"
+          B="app/src/main/java/com/smsmarketing"
 
-          # ── MainActivity ──
-          cat > "${BASE}/ui/main/MainActivity.kt" << 'EOF'
+          cat > "${B}/ui/main/MainActivity.kt" << 'EOF'
           package com.smsmarketing.ui.main
 
           import android.os.Bundle
@@ -385,23 +344,20 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   setContentView(R.layout.activity_main)
-                  val navHost = supportFragmentManager
-                      .findFragmentById(R.id.nav_host_fragment) as NavHostFragment
-                  val navController = navHost.navController
+                  val nav = (supportFragmentManager
+                      .findFragmentById(R.id.nav_host_fragment) as NavHostFragment)
+                      .navController
                   findViewById<BottomNavigationView>(R.id.bottom_nav)
-                      .setupWithNavController(navController)
+                      .setupWithNavController(nav)
               }
           }
           EOF
 
-          # ── ImportFragment ──
-          cat > "${BASE}/ui/import/ImportFragment.kt" << 'EOF'
-          package com.smsmarketing.ui.import
+          cat > "${B}/ui/import/ImportFragment.kt" << 'EOF'
+          package com.smsmarketing.ui.`import`
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class ImportFragment : Fragment() {
@@ -410,14 +366,11 @@ jobs:
           }
           EOF
 
-          # ── ContactsFragment ──
-          cat > "${BASE}/ui/contacts/ContactsFragment.kt" << 'EOF'
+          cat > "${B}/ui/contacts/ContactsFragment.kt" << 'EOF'
           package com.smsmarketing.ui.contacts
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class ContactsFragment : Fragment() {
@@ -426,14 +379,11 @@ jobs:
           }
           EOF
 
-          # ── TemplateFragment ──
-          cat > "${BASE}/ui/templates/TemplateFragment.kt" << 'EOF'
+          cat > "${B}/ui/templates/TemplateFragment.kt" << 'EOF'
           package com.smsmarketing.ui.templates
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class TemplateFragment : Fragment() {
@@ -442,14 +392,11 @@ jobs:
           }
           EOF
 
-          # ── CampaignFragment ──
-          cat > "${BASE}/ui/campaign/CampaignFragment.kt" << 'EOF'
+          cat > "${B}/ui/campaign/CampaignFragment.kt" << 'EOF'
           package com.smsmarketing.ui.campaign
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class CampaignFragment : Fragment() {
@@ -458,14 +405,11 @@ jobs:
           }
           EOF
 
-          # ── ScheduleFragment ──
-          cat > "${BASE}/ui/schedule/ScheduleFragment.kt" << 'EOF'
+          cat > "${B}/ui/schedule/ScheduleFragment.kt" << 'EOF'
           package com.smsmarketing.ui.schedule
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class ScheduleFragment : Fragment() {
@@ -474,14 +418,11 @@ jobs:
           }
           EOF
 
-          # ── LogsFragment ──
-          cat > "${BASE}/ui/logs/LogsFragment.kt" << 'EOF'
+          cat > "${B}/ui/logs/LogsFragment.kt" << 'EOF'
           package com.smsmarketing.ui.logs
 
           import android.os.Bundle
-          import android.view.LayoutInflater
-          import android.view.View
-          import android.view.ViewGroup
+          import android.view.*
           import androidx.fragment.app.Fragment
 
           class LogsFragment : Fragment() {
@@ -490,8 +431,7 @@ jobs:
           }
           EOF
 
-          # ── SmsService ──
-          cat > "${BASE}/worker/SmsService.kt" << 'EOF'
+          cat > "${B}/worker/SmsService.kt" << 'EOF'
           package com.smsmarketing.worker
 
           import android.app.Service
@@ -500,13 +440,11 @@ jobs:
 
           class SmsService : Service() {
               override fun onBind(intent: Intent?): IBinder? = null
-              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-                  START_NOT_STICKY
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_NOT_STICKY
           }
           EOF
 
-          # ── SmsBroadcastReceiver ──
-          cat > "${BASE}/worker/SmsBroadcastReceiver.kt" << 'EOF'
+          cat > "${B}/worker/SmsBroadcastReceiver.kt" << 'EOF'
           package com.smsmarketing.worker
 
           import android.content.BroadcastReceiver
@@ -514,12 +452,11 @@ jobs:
           import android.content.Intent
 
           class SmsBroadcastReceiver : BroadcastReceiver() {
-              override fun onReceive(context: Context, intent: Intent) { /* TODO */ }
+              override fun onReceive(context: Context, intent: Intent) {}
           }
           EOF
 
-          # ── BootReceiver ──
-          cat > "${BASE}/worker/BootReceiver.kt" << 'EOF'
+          cat > "${B}/worker/BootReceiver.kt" << 'EOF'
           package com.smsmarketing.worker
 
           import android.content.BroadcastReceiver
@@ -527,18 +464,18 @@ jobs:
           import android.content.Intent
 
           class BootReceiver : BroadcastReceiver() {
-              override fun onReceive(context: Context, intent: Intent) { /* TODO */ }
+              override fun onReceive(context: Context, intent: Intent) {}
           }
           EOF
 
-          echo "✅ All Kotlin source files created"
+          echo "✅ Kotlin source files created:"
+          find "${B}" -name "*.kt" | sort
 
-      # ─────────────────────────────────────────
-      # 5. LAYOUT XML
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 12 — LAYOUT XML
+      # ══════════════════════════════════════════════════
       - name: 🖥️ Create Layout Files
         run: |
-          # activity_main.xml
           cat > app/src/main/res/layout/activity_main.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <androidx.constraintlayout.widget.ConstraintLayout
@@ -570,11 +507,11 @@ jobs:
 
           </androidx.constraintlayout.widget.ConstraintLayout>
           EOF
-          echo "✅ Layout files created"
+          echo "✅ Layout created"
 
-      # ─────────────────────────────────────────
-      # 6. RESOURCE FILES (strings, colors, dimens, themes, menu, nav)
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 13 — RESOURCES
+      # ══════════════════════════════════════════════════
       - name: 🇻🇳 Create Vietnamese Strings
         run: |
           cat > app/src/main/res/values-vi/strings.xml << 'EOF'
@@ -738,7 +675,7 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <resources xmlns:tools="http://schemas.android.com/tools">
               <style name="Theme.SMSMarketing"
-                     parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+                  parent="Theme.MaterialComponents.DayNight.DarkActionBar">
                   <item name="colorPrimary">@color/colorPrimary</item>
                   <item name="colorPrimaryVariant">@color/colorPrimaryDark</item>
                   <item name="colorOnPrimary">@color/colorOnPrimary</item>
@@ -752,7 +689,7 @@ jobs:
           </resources>
           EOF
 
-      - name: 📋 Create Menu Files
+      - name: 📋 Create Menu & Navigation
         run: |
           cat > app/src/main/res/menu/bottom_nav_menu.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -778,8 +715,6 @@ jobs:
           </menu>
           EOF
 
-      - name: 🗺️ Create Navigation Graph
-        run: |
           cat > app/src/main/res/navigation/nav_graph.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <navigation
@@ -787,7 +722,6 @@ jobs:
               xmlns:app="http://schemas.android.com/apk/res-auto"
               android:id="@+id/nav_graph"
               app:startDestination="@id/nav_import">
-
               <fragment android:id="@+id/nav_import"
                   android:name="com.smsmarketing.ui.import.ImportFragment"
                   android:label="@string/nav_import" />
@@ -808,10 +742,12 @@ jobs:
                   android:label="@string/nav_logs" />
           </navigation>
           EOF
+          echo "✅ Menu & Navigation created"
 
-      # ─────────────────────────────────────────
-      # 7. APP ICON PLACEHOLDER (PNG tối giản để build không fail)
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 14 — APP ICONS (PNG hợp lệ, đúng kích thước
+      #           từng density)
+      # ══════════════════════════════════════════════════
       - name: 🖼️ Create App Icon Placeholders
         run: |
           python3 << 'EOFPY'
@@ -828,53 +764,56 @@ jobs:
                       + chunk(b'IDAT', zlib.compress(raw))
                       + chunk(b'IEND', b''))
 
-          densities = ['mipmap-mdpi','mipmap-hdpi','mipmap-xhdpi',
-                       'mipmap-xxhdpi','mipmap-xxxhdpi']
-          sizes     = [48, 72, 96, 144, 192]
-
-          for density, size in zip(densities, sizes):
+          for density, size in [
+              ('mipmap-mdpi',    48), ('mipmap-hdpi',    72),
+              ('mipmap-xhdpi',   96), ('mipmap-xxhdpi', 144),
+              ('mipmap-xxxhdpi',192)
+          ]:
               base = f'app/src/main/res/{density}'
               os.makedirs(base, exist_ok=True)
               png = make_png(size, size)
               open(f'{base}/ic_launcher.png',       'wb').write(png)
               open(f'{base}/ic_launcher_round.png', 'wb').write(png)
 
-          print("✅ App icons created")
+          print("✅ App icons created for all densities")
           EOFPY
 
-      # ─────────────────────────────────────────
-      # 8. GRANT EXECUTE PERMISSION (an toàn — chạy lại sau khi
-      #    wrapper đã được tạo ở bước Install Gradle)
-      # ─────────────────────────────────────────
-      - name: 📝 Grant Execute Permissions
-        run: chmod +x gradlew
+      # ══════════════════════════════════════════════════
+      # STEP 15 — VERIFY toàn bộ project
+      # ══════════════════════════════════════════════════
+      - name: 🔍 Verify Project Structure
+        run: |
+          echo "=== Root Gradle files ==="
+          ls -la settings.gradle build.gradle gradle.properties local.properties
+          ls -lh gradle/wrapper/
+          echo ""
+          echo "=== App module ==="
+          ls -la app/build.gradle app/proguard-rules.pro
+          echo ""
+          echo "=== Kotlin sources ==="
+          find app/src/main/java -name "*.kt" | sort
+          echo ""
+          echo "=== XML resources ==="
+          find app/src/main/res -name "*.xml" | sort
+          echo ""
+          echo "=== Icons ==="
+          find app/src/main/res -name "*.png" | sort
 
-      # ─────────────────────────────────────────
-      # FIX #8: Bỏ gradle/wrapper-validation-action
-      #   (action đó validate JAR đã có sẵn trong repo,
-      #    nhưng ở đây chúng ta SINH ra wrapper trong CI
-      #    nên không cần validate nó với checksum bên ngoài)
-      # ─────────────────────────────────────────
-
-      # ─────────────────────────────────────────
-      # 9. BUILD
-      #    FIX: Bỏ -PdisablePreDex (deprecated Gradle flag)
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 16 — BUILD APK
+      # ══════════════════════════════════════════════════
       - name: 🏗️ Build Debug APK
         run: |
+          chmod +x gradlew
           echo "🔨 Building APK..."
-          ./gradlew clean assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            2>&1 | tee build.log
-
+          ./gradlew clean assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           if [ $BUILD_EXIT -eq 0 ]; then
             echo "✅ Build successful!"
             ls -lh app/build/outputs/apk/debug/
           else
-            echo "❌ Build failed!"
-            tail -100 build.log
+            echo "❌ Build failed — last 150 lines:"
+            tail -150 build.log
             exit 1
           fi
 
@@ -886,32 +825,31 @@ jobs:
         run: ./gradlew lint --no-daemon
         continue-on-error: true
 
-      # ─────────────────────────────────────────
-      # 10. UPLOAD ARTIFACT
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 17 — UPLOAD APK
+      # ══════════════════════════════════════════════════
       - name: 📤 Upload Debug APK
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SMSMarketing-Debug
+          name: SMSMarketing-Debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
 
-      # ─────────────────────────────────────────
-      # 11. SUMMARY
-      # ─────────────────────────────────────────
+      # ══════════════════════════════════════════════════
+      # STEP 18 — SUMMARY
+      # ══════════════════════════════════════════════════
       - name: 📋 Build Summary
         if: always()
         run: |
-          echo "=========================================="
-          echo "✅ BUILD WORKFLOW COMPLETED"
-          echo "=========================================="
-          echo "🔧 Java:    ${{ env.JAVA_VERSION }}"
-          echo "🤖 SDK:     ${{ env.ANDROID_COMPILE_SDK }}"
-          echo "📦 Gradle:  ${{ env.GRADLE_VERSION }}"
-          echo ""
-          echo "📁 Project structure:"
-          find app/src/main -type d | head -25 || true
-          echo ""
-          echo "📦 APK output: app/build/outputs/apk/debug/app-debug.apk"
-          echo "=========================================="
+          echo "========================================"
+          echo "  BUILD WORKFLOW SUMMARY"
+          echo "========================================"
+          echo "  Java    : ${{ env.JAVA_VERSION }}"
+          echo "  Gradle  : ${{ env.GRADLE_VERSION }}"
+          echo "  SDK     : ${{ env.ANDROID_COMPILE_SDK }}"
+          echo "  Min SDK : ${{ env.ANDROID_MIN_SDK }}"
+          echo "  Run #   : ${{ github.run_number }}"
+          echo "========================================"
+          echo "  APK → app/build/outputs/apk/debug/"
+          echo "========================================"
