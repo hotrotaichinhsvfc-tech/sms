@@ -40,7 +40,9 @@ jobs:
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-          cache: gradle
+          # FIX: Bỏ cache: gradle — lúc setup-java chạy, project chưa có
+          # file *.gradle nào (vì các bước tạo file chạy sau), nên action
+          # sẽ báo lỗi "No file matched" và fail ngay lập tức.
 
       # ─────────────────────────────────────────
       # FIX #1: Tải Gradle thật và dùng nó tự sinh wrapper
